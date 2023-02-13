@@ -107,7 +107,7 @@ public class TestFileSystemDataset extends TestNativeDataset {
 
     FileSystemDatasetFactory factory = new FileSystemDatasetFactory(rootAllocator(), NativeMemoryPool.getDefault(),
         FileFormat.PARQUET, writeSupport.getOutputURI());
-    ScanOptions options = new ScanOptions(100, Optional.of(new String[]{"id"}));
+    ScanOptions options = new ScanOptions(100, Optional.of(new String[]{"id"}), Optional.empty());
     Schema schema = inferResultSchemaFromFactory(factory, options);
     List<ArrowRecordBatch> datum = collectResultFromFactory(factory, options);
     org.apache.avro.Schema expectedSchema = truncateAvroSchema(writeSupport.getAvroSchema(), 0, 1);
@@ -177,7 +177,7 @@ public class TestFileSystemDataset extends TestNativeDataset {
 
     FileSystemDatasetFactory factory = new FileSystemDatasetFactory(rootAllocator(), NativeMemoryPool.getDefault(),
         FileFormat.PARQUET, writeSupport.getOutputURI());
-    ScanOptions options = new ScanOptions(100, Optional.of(new String[0]));
+    ScanOptions options = new ScanOptions(100, Optional.of(new String[0]), Optional.empty());
     Schema schema = inferResultSchemaFromFactory(factory, options);
     List<ArrowRecordBatch> datum = collectResultFromFactory(factory, options);
     org.apache.avro.Schema expectedSchema = org.apache.avro.Schema.createRecord(Collections.emptyList());
@@ -200,7 +200,7 @@ public class TestFileSystemDataset extends TestNativeDataset {
 
     FileSystemDatasetFactory factory = new FileSystemDatasetFactory(rootAllocator(), NativeMemoryPool.getDefault(),
         FileFormat.PARQUET, writeSupport.getOutputURI());
-    ScanOptions options = new ScanOptions(100, Optional.empty());
+    ScanOptions options = new ScanOptions(100, Optional.empty(), Optional.empty());
     Schema schema = inferResultSchemaFromFactory(factory, options);
     List<ArrowRecordBatch> datum = collectResultFromFactory(factory, options);
 

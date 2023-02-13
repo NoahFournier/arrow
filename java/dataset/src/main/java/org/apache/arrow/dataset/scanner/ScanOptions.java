@@ -25,6 +25,7 @@ import org.apache.arrow.util.Preconditions;
  * Options used during scanning.
  */
 public class ScanOptions {
+  private final Optional<String> filter;
   private final Optional<String[]> columns;
   private final Optional<String> filter;
   private final long batchSize;
@@ -34,7 +35,7 @@ public class ScanOptions {
    * @param columns Projected columns. Empty for scanning all columns.
    * @param batchSize Maximum row number of each returned {@link org.apache.arrow.vector.ipc.message.ArrowRecordBatch}
    *
-   * @deprecated Deprecated. Use {@link #ScanOptions(long, Optional)} instead.
+   * @deprecated Deprecated. Use {@link #ScanOptions(long, Optional, Optional)} instead.
    */
   @Deprecated
   public ScanOptions(String[] columns, long batchSize) {
@@ -54,10 +55,11 @@ public class ScanOptions {
    *                Only columns present in the Array will be scanned.
    */
   public ScanOptions(long batchSize, Optional<String[]> columns, Optional<String> filter) {
-    Preconditions.checkNotNull(filter)
+    Preconditions.checkNotNull(filter);
     Preconditions.checkNotNull(columns);
     this.batchSize = batchSize;
     this.columns = columns;
+    this.filter = filter;
   }
 
   public ScanOptions(long batchSize) {
@@ -67,7 +69,7 @@ public class ScanOptions {
   public Optional<String[]> getColumns() {
     return columns;
   }
-  
+
   public Optional<String> getFilter() {
     return filter;
   }

@@ -24,6 +24,8 @@
 #include "arrow/compute/exec/expression.h"
 #include "arrow/type_fwd.h"
 #include "arrow/util/logging.h"
+#include "arrow/compute/api.h"
+#include <arrow/ipc/json_simple.h>
 
 namespace arrow {
 namespace compute {
@@ -109,6 +111,9 @@ static Result<std::shared_ptr<DataType>> ParseDataType(std::string_view& type);
 // Takes the args list not including the enclosing parentheses
 using InstantiateTypeFn =
     std::add_pointer_t<Result<std::shared_ptr<DataType>>(std::string_view&)>;
+
+using ParseLiteralFn =
+    std::add_pointer_t<Result<Expression>(std::shared_ptr<DataType>, std::string_view&)>;
 
 static Result<int32_t> ParseInt32(std::string_view& args) {
   ConsumeWhitespace(&args);
@@ -238,7 +243,82 @@ static const std::unordered_map<std::string_view, InstantiateTypeFn>
         {"dictionary", ParseDictionary},
 };
 
+static Result<Expression> ParseListLiteral(std::shared_ptr<DataType> type, std::string_view& expr) {
+    size_t rparen = expr.find_first_of(')');
+    std::string_view array_str = expr.substr(0, rparen);
+    expr.remove_prefix(rparen);
+    ARROW_ASSIGN_OR_RAISE(std::shared_ptr<Array> array, ipc::internal::json::ArrayFromJSON(type->field(0)->type(), array_str));
+    return literal(std::move(array));
+}
+
+static Result<Expression> ParseScalarLiteral(std::shared_ptr<DataType> type, std::string_view& expr) {
+    std::string_view value = TrimUntilNextSeparator(&expr);
+    std::shared_ptr<Scalar> scalar;
+    if (value.find('\\') == value.npos) {
+        ARROW_ASSIGN_OR_RAISE(scalar, Scalar::Parse(type, value));
+    } else {
+        std::string escaped = ProcessEscapes(value);
+        ARROW_ASSIGN_OR_RAISE(scalar, Scalar::Parse(type, escaped));
+    }
+    return literal(std::move(scalar));
+}
+
+static const std::unordered_map<Type::type, ParseLiteralFn>
+    kTypeToLiteral = {
+        {Type::BINARY, ParseScalarLiteral},
+        {Type::BOOL, ParseScalarLiteral},
+        {Type::DATE32, ParseScalarLiteral},
+        {Type::DATE64, ParseScalarLiteral},
+        {Type::DECIMAL, ParseScalarLiteral},
+        {Type::DECIMAL128, ParseScalarLiteral},
+        {Type::DECIMAL256, ParseScalarLiteral},
+        {Type::INT8, ParseScalarLiteral},
+        {Type::INT16, ParseScalarLiteral},
+        {Type::INT32, ParseScalarLiteral},
+        {Type::INT64, ParseScalarLiteral},
+        {Type::UINT8, ParseScalarLiteral},
+        {Type::STRING, ParseScalarLiteral},
+        {Type::UINT16, ParseScalarLiteral},
+        {Type::UINT32, ParseScalarLiteral},
+        {Type::UINT64, ParseScalarLiteral},
+        {Type::HALF_FLOAT, ParseScalarLiteral},
+        {Type::FLOAT, ParseScalarLiteral},
+        {Type::DOUBLE, ParseScalarLiteral},
+        {Type::TIMESTAMP, ParseScalarLiteral},
+        {Type::DURATION, ParseScalarLiteral},
+        {Type::LARGE_STRING, ParseScalarLiteral},
+        {Type::LARGE_BINARY, ParseScalarLiteral},
+        {Type::LIST, ParseListLiteral},
+        {Type::LARGE_LIST, ParseListLiteral},
+        {Type::FIXED_SIZE_LIST, ParseListLiteral},
+};
+
 static Result<Expression> ParseExpr(std::string_view& expr);
+
+static Result<Expression> ParseIsIn(std::string_view& expr) {
+    ConsumeWhitespace(&expr);
+    // Next item must be a field ref
+
+    if (expr.empty()) return Status::Invalid("Empty arguments to is_in!");
+
+    ARROW_ASSIGN_OR_RAISE(Expression arg1, ParseExpr(expr));
+    if (!arg1.field_ref()) return Status::Invalid("First argument to is_in not a field ref!");
+    RETURN_NOT_OK(ParseComma(expr));
+
+    ConsumeWhitespace(&expr);
+
+    // Next item must be a parameterised list type
+    // e.g $list(utf8):([])
+    ARROW_ASSIGN_OR_RAISE(Expression arg2, ParseExpr(expr));
+    if (!arg2.literal()) return Status::Invalid("Second argument to is_in not a datum");
+
+    if (expr.empty()) return Status::Invalid("Found unterminated expression argument list");
+    if (expr[0] != ')') return Status::Invalid("Too many arguments to is_in call!");
+
+    return call("is_in",
+                {arg1},
+                compute::SetLookupOptions{*arg2.literal(), false});
+}
 
 static Result<Expression> ParseCall(std::string_view& expr) {
   ConsumeWhitespace(&expr);
@@ -248,6 +328,10 @@ static Result<Expression> ParseCall(std::string_view& expr) {
   if (expr.empty())
     return Status::Invalid("Expected argument list after function name", function_name);
   expr.remove_prefix(1);  // Remove the open paren
+
+  if (function_name == "is_in") {
+      return ParseIsIn(expr);
+  }
 
   std::vector<Expression> args;
   do {
@@ -284,7 +368,12 @@ static Result<std::shared_ptr<DataType>> ParseParameterizedDataType(
   if (it == kNameToParameterizedType.end())
     return Status::Invalid("Unknown base type name ", base_type_name);
 
-  ARROW_ASSIGN_OR_RAISE(std::shared_ptr<DataType> parsed_type, it->second(type));
+  size_t rparen = type.find_first_of(")");
+  if (rparen == std::string_view::npos) return Status::Invalid("Cannot parse type ", type);
+  std::string_view internal_type_name = type.substr(0, rparen);
+  // TODO(noahf): Handle spaces in the internal type name here?
+  type.remove_prefix(rparen);
+  ARROW_ASSIGN_OR_RAISE(std::shared_ptr<DataType> parsed_type, it->second(internal_type_name));
   ConsumeWhitespace(&type);
   if (type.empty() || type[0] != ')')
     return Status::Invalid("Unterminated data type arg list!");
@@ -311,16 +400,11 @@ static Result<Expression> ParseLiteral(std::string_view& expr) {
 
   ARROW_ASSIGN_OR_RAISE(std::shared_ptr<DataType> type, ParseDataType(type_name));
 
-  std::string_view value = TrimUntilNextSeparator(&expr);
-
-  std::shared_ptr<Scalar> scalar;
-  if (value.find('\\') == value.npos) {
-    ARROW_ASSIGN_OR_RAISE(scalar, Scalar::Parse(type, value));
-  } else {
-    std::string escaped = ProcessEscapes(value);
-    ARROW_ASSIGN_OR_RAISE(scalar, Scalar::Parse(type, escaped));
+  auto it = kTypeToLiteral.find(type->id());
+  if (it == kTypeToLiteral.end()) {
+    return Status::Invalid("Cannot parse literal!");
   }
-  return literal(std::move(scalar));
+  return it->second(type, expr);
 }
 
 static Result<Expression> ParseExpr(std::string_view& expr) {
