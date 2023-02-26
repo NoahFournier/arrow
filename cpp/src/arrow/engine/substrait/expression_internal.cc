@@ -352,6 +352,32 @@ Result<compute::Expression> FromProto(const substrait::Expression& expr,
       }
     }
 
+    case substrait::Expression::kSingularOrList: {
+      const auto& or_list = expr.singular_or_list();
+      ARROW_ASSIGN_OR_RAISE(auto value,
+          FromProto(or_list.value(), ext_set, conversion_options));
+      std::shared_ptr<DataType> element_type;
+      ScalarVector options(or_list.options_size());
+      for (int i = 0; i < or_list.options_size(); ++i) {
+        ARROW_ASSIGN_OR_RAISE(auto option, FromProto(or_list.options(i), ext_set, conversion_options));
+        DCHECK(option.literal()->is_scalar());
+        options[i] = option.literal()->scalar();
+        if (element_type) {
+          if (!option.type()->Equals((*element_type))) {
+            return Status::Invalid(or_list.DebugString(), " has an option whose type doesn't match the other option types.");
+          }
+        } else {
+          element_type = option.literal()->type();
+        }
+      }
+
+      ARROW_ASSIGN_OR_RAISE(auto builder, MakeBuilder(element_type));;
+      RETURN_NOT_OK(builder->AppendScalars(options));
+      ARROW_ASSIGN_OR_RAISE(auto arr, builder->Finish());
+
+      return compute::call("is_in", {std::move(value)}, compute::SetLookupOptions(arr));
+    }
+
     default:
       break;
   }
